@@ -79,13 +79,12 @@ def parse_alert_clock(value: str, timezone_name: str) -> dt_time:
 
 
 def validate_runtime_config() -> None:
-        if not BOT_TOKEN:
-                raise ConfigError("未设置 BOT_TOKEN")
-        if ALERT_ENABLED:
-                parse_alert_clock(ALERT_TIME, ALERT_TIMEZONE)
-        parse_alert_clock(ALERT_TIME, ALERT_TIMEZONE 
-        if ALERT_ENABLED:
+    if not BOT_TOKEN:
+        raise ConfigError("未设置 BOT_TOKEN")
+        
+    if ALERT_ENABLED:
         parse_alert_clock(ALERT_TIME, ALERT_TIMEZONE)
+
 
 
 flask_app = Flask(__name__)
