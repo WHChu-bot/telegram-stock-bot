@@ -110,62 +110,46 @@ def healthz():
 
 
 def get_data(symbol: str) -> pd.DataFrame:
-    symbol = symbol.upper()
+    symbol = symbol.upper().strip()
 
-    # 方案1：download
+    # Stooq 美股日线：例如 nvda.us, spy.us
+    stooq_symbol = f"{symbol.lower()}.us"
+    url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
+
     try:
-        df = yf.download(
-            symbol,
-            period="1y",
-            interval="1d",
-            auto_adjust=False,
-            progress=False,
-            threads=False,
-        )
-    except Exception:
-        df = pd.DataFrame()
-
-    # 方案2：download 失败时，用 history 兜底
-    if df is None or df.empty:
-        try:
-            df = yf.Ticker(symbol).history(
-                period="1y",
-                interval="1d",
-                auto_adjust=False,
-            )
-        except Exception as exc:
-            raise DataFetchError(f"{symbol}：网络请求失败") from exc
+        df = pd.read_csv(url)
+    except Exception as exc:
+        raise DataFetchError(f"{symbol}：数据源请求失败") from exc
 
     if df is None or df.empty:
         raise DataFetchError(f"{symbol}：暂无足够日线数据")
 
-    # 兼容不同返回格式
-    df = df.reset_index()
-
-    # 统一列名
-    rename_map = {
-        "Date": "time",
-        "Datetime": "time",
-        "Open": "open",
-        "High": "high",
-        "Low": "low",
-        "Close": "close",
-        "Volume": "volume",
-    }
-    df = df.rename(columns=rename_map)
-
-    needed = ["time", "open", "high", "low", "close", "volume"]
-    for col in needed:
+    # Stooq 列名：Date,Open,High,Low,Close,Volume
+    needed_raw = ["Date", "Open", "High", "Low", "Close", "Volume"]
+    for col in needed_raw:
         if col not in df.columns:
             raise DataFetchError(f"{symbol}：数据格式异常，缺少 {col}")
 
-    df = df[needed].copy()
+    df = df[needed_raw].copy()
+    df = df.rename(
+        columns={
+            "Date": "time",
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Volume": "volume",
+        }
+    )
 
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # 只清理关键字段为空的行，避免误删过多
-    df = df.dropna(subset=["open", "high", "low", "close", "volume"]).reset_index(drop=True)
+    df["time"] = pd.to_datetime(df["time"], errors="coerce")
+    df = df.dropna(subset=["time", "open", "high", "low", "close", "volume"]).copy()
+
+    # Stooq 常见是新到旧，改成旧到新
+    df = df.sort_values("time").reset_index(drop=True)
 
     if len(df) < 60:
         raise DataFetchError(f"{symbol}：暂无足够日线数据")
@@ -177,51 +161,6 @@ def get_data(symbol: str) -> pd.DataFrame:
     delta = df["close"].diff()
     gain = np.where(delta > 0, delta, 0.0)
     loss = np.where(delta < 0, -delta, 0.0)
-    avg_gain = pd.Series(gain).rolling(14).mean()
-    avg_loss = pd.Series(loss).rolling(14).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    df["rsi"] = 100 - (100 / (1 + rs))
-
-    tr_components = pd.concat(
-        [
-            df["high"] - df["low"],
-            (df["high"] - df["close"].shift()).abs(),
-            (df["low"] - df["close"].shift()).abs(),
-        ],
-        axis=1,
-    )
-    df["atr"] = tr_components.max(axis=1).rolling(14).mean()
-    df["vol_ma"] = df["volume"].rolling(20).mean()
-
-    return df.dropna().reset_index(drop=True)
-    if len(df) < 60:
-        raise DataFetchError(f"{symbol}：数据不足，至少需要 60 根日线")
-
-    df["ema9"] = df["close"].ewm(span=9).mean()
-    df["ema21"] = df["close"].ewm(span=21).mean()
-    df["ema50"] = df["close"].ewm(span=50).mean()
-
-    delta = df["close"].diff()
-    gain = np.where(delta > 0, delta, 0.0)
-    loss = np.where(delta < 0, -delta, 0.0)
-    avg_gain = pd.Series(gain).rolling(14).mean()
-    avg_loss = pd.Series(loss).rolling(14).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    df["rsi"] = 100 - (100 / (1 + rs))
-
-    tr_components = pd.concat(
-        [
-            df["high"] - df["low"],
-            (df["high"] - df["close"].shift()).abs(),
-            (df["low"] - df["close"].shift()).abs(),
-        ],
-        axis=1,
-    )
-    df["atr"] = tr_components.max(axis=1).rolling(14).mean()
-    df["vol_ma"] = df["volume"].rolling(20).mean()
-
-    return df.dropna().reset_index(drop=True)
-
     avg_gain = pd.Series(gain).rolling(14).mean()
     avg_loss = pd.Series(loss).rolling(14).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
