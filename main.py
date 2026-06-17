@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import logging
 import os
 import threading
@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
-import requests
+import yfinance as yf
 from flask import Flask, jsonify
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
@@ -19,7 +19,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-REQUESTS_SESSION = requests.Session()
+
 
 
 class ConfigError(RuntimeError):
@@ -81,8 +81,11 @@ def parse_alert_clock(value: str, timezone_name: str) -> dt_time:
 def validate_runtime_config() -> None:
     if not BOT_TOKEN:
         raise ConfigError("未设置 BOT_TOKEN")
-    if not FINNHUB_KEY:
-        raise ConfigError("未设置 FINNHUB_KEY")
+    def validate_runtime_config() -> None:
+    if not BOT_TOKEN:
+        raise ConfigError("未设置 BOT_TOKEN")
+    if ALERT_ENABLED:
+        parse_alert_clock(ALERT_TIME, ALERT_TIMEZONE)
     if ALERT_ENABLED:
         parse_alert_clock(ALERT_TIME, ALERT_TIMEZONE)
 
@@ -110,62 +113,58 @@ def healthz():
 
 
 def get_data(symbol: str) -> pd.DataFrame:
-    if not FINNHUB_KEY:
-        raise ConfigError("未配置 FINNHUB_KEY")
-
-    url = "https://finnhub.io/api/v1/stock/candle"
-    now = int(time.time())
-    six_months_ago = now - 60 * 60 * 24 * 180
-    params = {
-        "symbol": symbol.upper(),
-        "resolution": "D",
-        "from": six_months_ago,
-        "to": now,
-        "token": FINNHUB_KEY,
-    }
+    def get_data(symbol: str) -> pd.DataFrame:
+    symbol = symbol.upper()
 
     try:
-        resp = REQUESTS_SESSION.get(url, params=params, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.HTTPError as exc:
-        raise DataFetchError(f"{symbol.upper()}：数据接口返回 HTTP {resp.status_code}") from exc
-    except requests.RequestException as exc:
-        raise DataFetchError(f"{symbol.upper()}：网络请求失败") from exc
-    except ValueError as exc:
-        raise DataFetchError(f"{symbol.upper()}：数据接口返回了无法解析的内容") from exc
+        df = yf.download(
+            symbol,
+            period="6mo",
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+        )
+    except Exception as exc:
+        raise DataFetchError(f"{symbol}：网络请求失败") from exc
 
-    if data.get("error"):
-        logging.warning("Finnhub error for %s: %s", symbol.upper(), mask_secret(str(data)))
-        raise DataFetchError(f"{symbol.upper()}：当前 Key 无权访问该资源，请检查 Finnhub 套餐或权限")
+    if df is None or df.empty:
+        raise DataFetchError(f"{symbol}：暂无足够日线数据")
 
-    if data.get("s") == "no_data":
-        raise DataFetchError(f"{symbol.upper()}：暂无足够日线数据")
+    df = df.reset_index()
 
-    if data.get("s") != "ok":
-        logging.warning("Finnhub unexpected response for %s: %s", symbol.upper(), mask_secret(str(data)))
-        info = str(data.get("Information") or data.get("message") or data.get("note") or "")
-        if "rate limit" in info.lower():
-            raise DataFetchError(f"{symbol.upper()}：数据接口触发限流，请稍后再试")
-        raise DataFetchError(f"{symbol.upper()}：行情获取失败，请检查代码是否正确或稍后重试")
+    if "Date" not in df.columns:
+        raise DataFetchError(f"{symbol}：数据格式异常")
 
-    df = pd.DataFrame(
-        {
-            "time": pd.to_datetime(data["t"], unit="s"),
-            "open": data["o"],
-            "high": data["h"],
-            "low": data["l"],
-            "close": data["c"],
-            "volume": data["v"],
+    df = df.rename(
+        columns={
+            "Date": "time",
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Volume": "volume",
         }
     )
 
+    needed = ["time", "open", "high", "low", "close", "volume"]
+    for col in needed:
+        if col not in df.columns:
+            raise DataFetchError(f"{symbol}：缺少字段 {col}")
+
+    df = df[needed].copy()
+
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna().reset_index(drop=True)
+
     if len(df) < 60:
-        raise DataFetchError(f"{symbol.upper()}：数据不足，至少需要 60 根日线")
+        raise DataFetchError(f"{symbol}：数据不足，至少需要 60 根日线")
 
     df["ema9"] = df["close"].ewm(span=9).mean()
     df["ema21"] = df["close"].ewm(span=21).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
+
     delta = df["close"].diff()
     gain = np.where(delta > 0, delta, 0.0)
     loss = np.where(delta < 0, -delta, 0.0)
@@ -173,6 +172,7 @@ def get_data(symbol: str) -> pd.DataFrame:
     avg_loss = pd.Series(loss).rolling(14).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
     df["rsi"] = 100 - (100 / (1 + rs))
+
     tr_components = pd.concat(
         [
             df["high"] - df["low"],
@@ -183,6 +183,7 @@ def get_data(symbol: str) -> pd.DataFrame:
     )
     df["atr"] = tr_components.max(axis=1).rolling(14).mean()
     df["vol_ma"] = df["volume"].rolling(20).mean()
+
     return df.dropna().reset_index(drop=True)
 
 
