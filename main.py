@@ -83,8 +83,8 @@ def validate_runtime_config() -> None:
                 raise ConfigError("未设置 BOT_TOKEN")
         if ALERT_ENABLED:
                 parse_alert_clock(ALERT_TIME, ALERT_TIMEZONE)
-        parse_alert_clock(ALERT_TIME, ALERT_TIMEZONE)
-    if ALERT_ENABLED:
+        parse_alert_clock(ALERT_TIME, ALERT_TIMEZONE 
+        if ALERT_ENABLED:
         parse_alert_clock(ALERT_TIME, ALERT_TIMEZONE)
 
 
