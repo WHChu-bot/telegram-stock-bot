@@ -110,30 +110,31 @@ def healthz():
 
 
 def get_data(symbol: str) -> pd.DataFrame:
-    def get_data(symbol: str) -> pd.DataFrame:
     symbol = symbol.upper()
 
+
+
     try:
-        df = yf.download(
-            symbol,
-            period="6mo",
-            interval="1d",
-            auto_adjust=False,
-            progress=False,
+            df = yf.download(
+                symbol,
+                period="6mo",
+                interval="1d",
+                auto_adjust=False,
+                progress=False,
         )
     except Exception as exc:
-        raise DataFetchError(f"{symbol}：网络请求失败") from exc
+            raise DataFetchError(f"{symbol}：网络请求失败") from exc
 
-    if df is None or df.empty:
-        raise DataFetchError(f"{symbol}：暂无足够日线数据")
+        if df is None or df.empty:
+            raise DataFetchError(f"{symbol}：暂无足够日线数据")
 
-    df = df.reset_index()
+        df = df.reset_index()
 
-    if "Date" not in df.columns:
-        raise DataFetchError(f"{symbol}：数据格式异常")
+        if "Date" not in df.columns:
+            raise DataFetchError(f"{symbol}：数据格式异常")
 
-    df = df.rename(
-        columns={
+        df = df.rename(
+            columns={
             "Date": "time",
             "Open": "open",
             "High": "high",
