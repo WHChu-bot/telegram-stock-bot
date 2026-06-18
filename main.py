@@ -5,7 +5,8 @@ import threading
 import time
 from datetime import time as dt_time
 from zoneinfo import ZoneInfo
-
+import requests
+from io import StringIO
 import numpy as np
 import pandas as pd
 import yfinance as yf
