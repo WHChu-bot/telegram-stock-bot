@@ -113,86 +113,110 @@ def healthz():
 
 def get_data(symbol: str) -> pd.DataFrame:
     symbol = symbol.upper().strip()
-    stooq_symbol = f"{symbol.lower()}.us"
-    url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
 
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+    def normalize_dataframe(df: pd.DataFrame, source_name: str) -> pd.DataFrame:
+        if df is None or df.empty:
+            raise DataFetchError(f"{symbol}：{source_name} 暂无足够日线数据")
+
+        df = df.copy()
+        df.columns = [str(col).replace("\ufeff", "").strip().lower() for col in df.columns]
+
+        needed_raw = ["date", "open", "high", "low", "close", "volume"]
+        for col in needed_raw:
+            if col not in df.columns:
+                raise DataFetchError(f"{symbol}：{source_name} 数据格式异常，缺少 {col}")
+
+        df = df[needed_raw].copy()
+        df = df.rename(columns={"date": "time"})
+
+        for col in ["open", "high", "low", "close", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        df["time"] = pd.to_datetime(df["time"], errors="coerce")
+        df = df.dropna(subset=["time", "open", "high", "low", "close", "volume"]).copy()
+        df = df.sort_values("time").reset_index(drop=True)
+
+        if len(df) < 60:
+            raise DataFetchError(f"{symbol}：{source_name} 暂无足够日线数据")
+
+        df["ema9"] = df["close"].ewm(span=9).mean()
+        df["ema21"] = df["close"].ewm(span=21).mean()
+        df["ema50"] = df["close"].ewm(span=50).mean()
+
+        delta = df["close"].diff()
+        gain = np.where(delta > 0, delta, 0.0)
+        loss = np.where(delta < 0, -delta, 0.0)
+        avg_gain = pd.Series(gain).rolling(14).mean()
+        avg_loss = pd.Series(loss).rolling(14).mean()
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        df["rsi"] = 100 - (100 / (1 + rs))
+
+        tr_components = pd.concat(
+            [
+                df["high"] - df["low"],
+                (df["high"] - df["close"].shift()).abs(),
+                (df["low"] - df["close"].shift()).abs(),
+            ],
+            axis=1,
+        )
+        df["atr"] = tr_components.max(axis=1).rolling(14).mean()
+        df["vol_ma"] = df["volume"].rolling(20).mean()
+
+        df = df.dropna().reset_index(drop=True)
+        if df.empty:
+            raise DataFetchError(f"{symbol}：{source_name} 指标计算后无有效数据")
+
+        return df
+
+    stooq_symbol = f"{symbol.lower()}.us"
+    stooq_url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
+    headers = {"User-Agent": "Mozilla/5.0"}
 
     try:
-        resp = requests.get(url, headers=headers, timeout=20)
+        resp = requests.get(stooq_url, headers=headers, timeout=20)
         resp.raise_for_status()
         text = resp.text.strip()
-    except requests.RequestException as exc:
-        raise DataFetchError(f"{symbol}：数据源请求失败") from exc
 
-    if not text or text.startswith("No data"):
-        raise DataFetchError(f"{symbol}：暂无足够日线数据")
+        if not text or text.startswith("No data"):
+            raise DataFetchError(f"{symbol}：Stooq 暂无足够日线数据")
 
-    if text.lstrip().startswith("<"):
-        raise DataFetchError(f"{symbol}：数据源暂时不可用，请稍后再试")
+        if text.lstrip().startswith("<"):
+            raise DataFetchError(f"{symbol}：Stooq 暂时不可用")
+
+        stooq_df = pd.read_csv(StringIO(text))
+        stooq_df.columns = [str(col).replace("\ufeff", "").strip().lower() for col in stooq_df.columns]
+        return normalize_dataframe(stooq_df, "Stooq")
+    except Exception as stooq_exc:
+        logging.warning("%s 从 Stooq 获取失败，准备回退到 yfinance：%s", symbol, mask_secret(str(stooq_exc)))
 
     try:
-        df = pd.read_csv(StringIO(text))
-    except Exception as exc:
-        raise DataFetchError(f"{symbol}：数据格式解析失败") from exc
+        yf_df = yf.download(
+            symbol,
+            period="1y",
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            threads=False,
+        )
 
-    # 统一列名，兼容大小写和隐藏字符
-    df.columns = [str(col).replace("\ufeff", "").strip().lower() for col in df.columns]
+        if yf_df is None or yf_df.empty:
+            raise DataFetchError(f"{symbol}：yfinance 暂无足够日线数据")
 
-    needed_raw = ["date", "open", "high", "low", "close", "volume"]
-    for col in needed_raw:
-        if col not in df.columns:
-            raise DataFetchError(f"{symbol}：数据格式异常，缺少 {col}")
+        yf_df = yf_df.reset_index()
 
-    df = df[needed_raw].copy()
-    df = df.rename(
-        columns={
-            "date": "time",
-            "open": "open",
-            "high": "high",
-            "low": "low",
-            "close": "close",
-            "volume": "volume",
-        }
-    )
+        # 兼容不同版本 yfinance 返回的列名
+        yf_df.columns = [str(col).strip().lower() for col in yf_df.columns]
+        if "adj close" in yf_df.columns and "close" not in yf_df.columns:
+            yf_df["close"] = yf_df["adj close"]
 
-    for col in ["open", "high", "low", "close", "volume"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df["time"] = pd.to_datetime(df["time"], errors="coerce")
-    df = df.dropna(subset=["time", "open", "high", "low", "close", "volume"]).copy()
-    df = df.sort_values("time").reset_index(drop=True)
-
-    if len(df) < 60:
-        raise DataFetchError(f"{symbol}：暂无足够日线数据")
-
-    df["ema9"] = df["close"].ewm(span=9).mean()
-    df["ema21"] = df["close"].ewm(span=21).mean()
-    df["ema50"] = df["close"].ewm(span=50).mean()
-
-    delta = df["close"].diff()
-    gain = np.where(delta > 0, delta, 0.0)
-    loss = np.where(delta < 0, -delta, 0.0)
-    avg_gain = pd.Series(gain).rolling(14).mean()
-    avg_loss = pd.Series(loss).rolling(14).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    df["rsi"] = 100 - (100 / (1 + rs))
-
-    tr_components = pd.concat(
-        [
-            df["high"] - df["low"],
-            (df["high"] - df["close"].shift()).abs(),
-            (df["low"] - df["close"].shift()).abs(),
-        ],
-        axis=1,
-    )
-    df["atr"] = tr_components.max(axis=1).rolling(14).mean()
-    df["vol_ma"] = df["volume"].rolling(20).mean()
-
-    return df.dropna().reset_index(drop=True)
-
+        return normalize_dataframe(yf_df, "yfinance")
+    except Exception as yf_exc:
+        logging.exception(
+            "%s 从 yfinance 获取也失败：%s",
+            symbol,
+            mask_secret(str(yf_exc)),
+        )
+        raise DataFetchError(f"{symbol}：数据源暂时不可用，请稍后再试") from yf_exc
 
 def analyze(symbol: str) -> dict:
     df = get_data(symbol)
