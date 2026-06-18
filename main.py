@@ -13,6 +13,7 @@ import yfinance as yf
 from flask import Flask, jsonify
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from waitress import serve
 
 
 logging.basicConfig(
@@ -457,7 +458,7 @@ def register_jobs(app):
 
 
 def run_flask():
-    flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
+    serve(flask_app, host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
 
 
 async def run_bot():
