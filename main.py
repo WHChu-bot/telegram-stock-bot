@@ -129,12 +129,18 @@ def get_data(symbol: str) -> pd.DataFrame:
     if not text or text.startswith("No data"):
         raise DataFetchError(f"{symbol}：暂无足够日线数据")
 
+    if text.lstrip().startswith("<"):
+        raise DataFetchError(f"{symbol}：数据源暂时不可用，请稍后再试")
+
     try:
         df = pd.read_csv(StringIO(text))
     except Exception as exc:
         raise DataFetchError(f"{symbol}：数据格式解析失败") from exc
 
-    needed_raw = ["Date", "Open", "High", "Low", "Close", "Volume"]
+    # 统一列名，兼容大小写和隐藏字符
+    df.columns = [str(col).replace("\ufeff", "").strip().lower() for col in df.columns]
+
+    needed_raw = ["date", "open", "high", "low", "close", "volume"]
     for col in needed_raw:
         if col not in df.columns:
             raise DataFetchError(f"{symbol}：数据格式异常，缺少 {col}")
@@ -142,12 +148,12 @@ def get_data(symbol: str) -> pd.DataFrame:
     df = df[needed_raw].copy()
     df = df.rename(
         columns={
-            "Date": "time",
-            "Open": "open",
-            "High": "high",
-            "Low": "low",
-            "Close": "close",
-            "Volume": "volume",
+            "date": "time",
+            "open": "open",
+            "high": "high",
+            "low": "low",
+            "close": "close",
+            "volume": "volume",
         }
     )
 
