@@ -111,20 +111,28 @@ def healthz():
 
 def get_data(symbol: str) -> pd.DataFrame:
     symbol = symbol.upper().strip()
-
-    # Stooq 美股日线：例如 nvda.us, spy.us
     stooq_symbol = f"{symbol.lower()}.us"
     url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
 
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
     try:
-        df = pd.read_csv(url)
-    except Exception as exc:
+        resp = requests.get(url, headers=headers, timeout=20)
+        resp.raise_for_status()
+        text = resp.text.strip()
+    except requests.RequestException as exc:
         raise DataFetchError(f"{symbol}：数据源请求失败") from exc
 
-    if df is None or df.empty:
+    if not text or text.startswith("No data"):
         raise DataFetchError(f"{symbol}：暂无足够日线数据")
 
-    # Stooq 列名：Date,Open,High,Low,Close,Volume
+    try:
+        df = pd.read_csv(StringIO(text))
+    except Exception as exc:
+        raise DataFetchError(f"{symbol}：数据格式解析失败") from exc
+
     needed_raw = ["Date", "Open", "High", "Low", "Close", "Volume"]
     for col in needed_raw:
         if col not in df.columns:
@@ -147,8 +155,6 @@ def get_data(symbol: str) -> pd.DataFrame:
 
     df["time"] = pd.to_datetime(df["time"], errors="coerce")
     df = df.dropna(subset=["time", "open", "high", "low", "close", "volume"]).copy()
-
-    # Stooq 常见是新到旧，改成旧到新
     df = df.sort_values("time").reset_index(drop=True)
 
     if len(df) < 60:
